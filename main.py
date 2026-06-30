@@ -64,15 +64,113 @@ for df in [train, test]:
     df.loc[mask, "GarageYrBlt"] = df.loc[mask, "YearBuilt"]
 
 # --- durum raporu ---
-print("Kalan eksik (train):")
-mt = train.isnull().sum()
-print(mt[mt > 0])
+import numpy as np
 
-print("\nKalan eksik (test):")
-ms = test.isnull().sum()
-print(ms[ms > 0])
+# --- Adım 1: Veri temizleme (devam) ---
 
-# MasVnrType ve MasVnrArea aynı satırlarda mı eksik?
-area_null = train["MasVnrArea"].isnull()
-print(f"\nMasVnrArea eksik: {area_null.sum()} satır")
-print(f"Bu satırlarda MasVnrType: {train.loc[area_null, 'MasVnrType'].unique()}")
+# LotFrontage: Neighborhood medyanı ile doldur
+lot_median = train.groupby("Neighborhood")["LotFrontage"].median()
+for df in [train, test]:
+    mask = df["LotFrontage"].isnull()
+    df.loc[mask, "LotFrontage"] = df.loc[mask, "Neighborhood"].map(lot_median)
+
+# MasVnrArea: eksik → 0 (MasVnrType zaten "None" yapıldı)
+for df in [train, test]:
+    df["MasVnrArea"] = df["MasVnrArea"].fillna(0)
+
+# Sayısal bodrum/garaj sütunları: eksik → 0 (özellik yok demek)
+zero_fill_num = [
+    "BsmtFinSF1", "BsmtFinSF2", "BsmtUnfSF", "TotalBsmtSF",
+    "BsmtFullBath", "BsmtHalfBath",
+    "GarageCars", "GarageArea",
+]
+for col in zero_fill_num:
+    for df in [train, test]:
+        df[col] = df[col].fillna(0)
+
+# Electrical: train'de 1 eksik → mode
+train["Electrical"] = train["Electrical"].fillna(train["Electrical"].mode()[0])
+
+# MSZoning, SaleType, Exterior1st, Exterior2nd: test'te az eksik → mode
+for col in ["MSZoning", "SaleType", "Exterior1st", "Exterior2nd", "KitchenQual", "Utilities"]:
+    mode_val = train[col].mode()[0]
+    test[col] = test[col].fillna(mode_val)
+
+# Tanı: tüm eksikler giderildi mi?
+remaining_train = train.isnull().sum()
+remaining_test  = test.isnull().sum()
+print("Kalan eksik (train):", remaining_train[remaining_train > 0].to_dict())
+print("Kalan eksik (test):", remaining_test[remaining_test > 0].to_dict())
+
+# --- Adım 2: Feature engineering ---
+
+for df in [train, test]:
+    df["TotalSF"]      = df["TotalBsmtSF"] + df["1stFlrSF"] + df["2ndFlrSF"]
+    df["HouseAge"]     = df["YrSold"].astype(int) - df["YearBuilt"]
+    df["RemodAge"]     = df["YrSold"].astype(int) - df["YearRemodAdd"]
+    df["TotalBath"]    = (df["FullBath"] + 0.5 * df["HalfBath"]
+                          + df["BsmtFullBath"] + 0.5 * df["BsmtHalfBath"])
+    df["TotalPorch"]   = (df["OpenPorchSF"] + df["EnclosedPorch"]
+                          + df["3SsnPorch"] + df["ScreenPorch"])
+    df["HasPool"]      = (df["PoolArea"] > 0).astype(int)
+    df["HasGarage"]    = (df["GarageArea"] > 0).astype(int)
+    df["HasBsmt"]      = (df["TotalBsmtSF"] > 0).astype(int)
+    df["HasFireplace"] = (df["Fireplaces"] > 0).astype(int)
+
+# --- Adım 3: Target transform + birleştirme ---
+
+y = np.log1p(train["SalePrice"])
+train_ids = train["Id"]
+test_ids  = test["Id"]
+
+train.drop(columns=["SalePrice", "Id"], inplace=True)
+test.drop(columns=["Id"], inplace=True)
+
+n_train  = len(train)
+all_data = pd.concat([train, test], axis=0).reset_index(drop=True)
+
+# --- Adım 4: One-hot encoding ---
+
+all_data = pd.get_dummies(all_data)
+train_enc = all_data[:n_train]
+test_enc  = all_data[n_train:]
+
+print(f"\nEğitim seti: {train_enc.shape}, Test seti: {test_enc.shape}")
+
+# --- Adım 5: Model eğitimi + Cross-Validation ---
+
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import cross_val_score
+
+ridge = Ridge(alpha=10)
+scores = cross_val_score(ridge, train_enc, y, cv=5,
+                         scoring="neg_root_mean_squared_error")
+print(f"Ridge CV RMSE: {-scores.mean():.4f} ± {scores.std():.4f}")
+
+try:
+    from xgboost import XGBRegressor
+    xgb = XGBRegressor(
+        n_estimators=1000, learning_rate=0.05, max_depth=4,
+        subsample=0.8, colsample_bytree=0.8,
+        random_state=42, n_jobs=-1, verbosity=0,
+    )
+    xgb_scores = cross_val_score(xgb, train_enc, y, cv=5,
+                                 scoring="neg_root_mean_squared_error")
+    print(f"XGBoost CV RMSE: {-xgb_scores.mean():.4f} ± {xgb_scores.std():.4f}")
+    best_model = xgb if -xgb_scores.mean() < -scores.mean() else ridge
+    best_name  = "XGBoost" if best_model is xgb else "Ridge"
+except ImportError:
+    print("xgboost kurulu değil, Ridge kullanılıyor.")
+    best_model = ridge
+    best_name  = "Ridge"
+
+print(f"\nKullanılan model: {best_name}")
+
+# --- Adım 6: Submission ---
+
+best_model.fit(train_enc, y)
+preds = np.expm1(best_model.predict(test_enc))
+
+submission = pd.DataFrame({"Id": test_ids, "SalePrice": preds})
+submission.to_csv("submission.csv", index=False)
+print(f"submission.csv kaydedildi ({len(submission)} satır)")
