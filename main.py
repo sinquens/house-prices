@@ -90,8 +90,12 @@ for col in zero_fill_num:
 
 # Kategorik eksikler → mode
 train["Electrical"] = train["Electrical"].fillna(train["Electrical"].mode()[0])
-for col in ["MSZoning", "SaleType", "Exterior1st", "Exterior2nd", "KitchenQual", "Utilities"]:
+for col in ["MSZoning", "SaleType", "Exterior1st", "Exterior2nd", "KitchenQual"]:
     test[col] = test[col].fillna(train[col].mode()[0])
+
+# Utilities: train'de %99.9 AllPub → sabit sütun, modele bilgi katmaz
+for df in [train, test]:
+    df.drop(columns=["Utilities"], inplace=True)
 
 # --- Feature engineering ---
 
