@@ -1,10 +1,10 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import skew
-from sklearn.linear_model import Ridge
+from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import cross_val_score
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from xgboost import XGBRegressor
 
 train = pd.read_csv("train.csv")
 test = pd.read_csv("test.csv")
@@ -128,66 +128,38 @@ for df in [train, test]:
     df["HasBsmt"]      = (df["TotalBsmtSF"] > 0).astype(int)
     df["HasFireplace"] = (df["Fireplaces"] > 0).astype(int)
 
-# --- Target transform + birleştirme ---
+# --- Modelleme ---
 
-y = np.log1p(train["SalePrice"])
+y = np.log1p(train["SalePrice"])          # hedefi log dönüşümüne al
 test_ids = test["Id"]
-n_train  = len(train)
 
-train.drop(columns=["SalePrice", "Id"], inplace=True)
-test.drop(columns=["Id"], inplace=True)
+X      = train.drop(columns=["SalePrice", "Id"])
+X_test = test.drop(columns=["Id"])
 
-all_data = pd.concat([train, test], axis=0).reset_index(drop=True)
+cat_cols = X.select_dtypes(include=["object"]).columns   # kalan kategorikler
 
-# Çarpık sayısal sütunları düzelt (skewness > 0.5)
-num_cols  = all_data.select_dtypes(include=[np.number]).columns
-skewness  = all_data[num_cols].apply(skew).sort_values(ascending=False)
-skewed    = skewness[skewness > 0.5].index
-all_data[skewed] = np.log1p(all_data[skewed].clip(lower=0))
+# kategorikleri one-hot, sayısalları geçir
+preprocess = ColumnTransformer(
+    [("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols)],
+    remainder="passthrough",
+)
 
-# One-hot encoding
-all_data  = pd.get_dummies(all_data)
-train_enc = all_data[:n_train]
-test_enc  = all_data[n_train:]
-
-print(f"Eğitim seti: {train_enc.shape}, Test seti: {test_enc.shape}")
-
-# --- Model eğitimi + Cross-Validation ---
-
-ridge = make_pipeline(StandardScaler(), Ridge(alpha=10))
-ridge_scores = cross_val_score(ridge, train_enc, y, cv=5,
-                               scoring="neg_root_mean_squared_error")
-print(f"Ridge CV RMSE:   {-ridge_scores.mean():.4f} ± {ridge_scores.std():.4f}")
-
-use_xgb = False
-try:
-    from xgboost import XGBRegressor
-    xgb = XGBRegressor(
+model = Pipeline([
+    ("prep", preprocess),
+    ("xgb", XGBRegressor(
         n_estimators=1000, learning_rate=0.05, max_depth=4,
         subsample=0.8, colsample_bytree=0.8,
         random_state=42, n_jobs=-1, verbosity=0,
-    )
-    xgb_scores = cross_val_score(xgb, train_enc, y, cv=5,
-                                 scoring="neg_root_mean_squared_error")
-    print(f"XGBoost CV RMSE: {-xgb_scores.mean():.4f} ± {xgb_scores.std():.4f}")
-    use_xgb = True
-except ImportError:
-    print("xgboost kurulu değil, yalnızca Ridge kullanılıyor.")
+    )),
+])
 
-# --- Submission ---
+# 5-fold CV RMSE (log ölçeği)
+scores = cross_val_score(model, X, y, cv=5, scoring="neg_root_mean_squared_error")
+print(f"XGBoost CV RMSE: {-scores.mean():.4f} ± {scores.std():.4f}")
 
-ridge.fit(train_enc, y)
-ridge_preds = np.expm1(ridge.predict(test_enc))
-
-if use_xgb:
-    xgb.fit(train_enc, y)
-    xgb_preds = np.expm1(xgb.predict(test_enc))
-    preds = 0.5 * ridge_preds + 0.5 * xgb_preds
-    print("\nKullanılan model: Ridge + XGBoost blend (50/50)")
-else:
-    preds = ridge_preds
-    print("\nKullanılan model: Ridge")
-
+# eğit → tahmin → geri dönüştür → kaydet
+model.fit(X, y)
+preds = np.expm1(model.predict(X_test))
 submission = pd.DataFrame({"Id": test_ids, "SalePrice": preds})
 submission.to_csv("submission.csv", index=False)
 print(f"submission.csv kaydedildi ({len(submission)} satır)")
