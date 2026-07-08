@@ -116,10 +116,10 @@ for col in cat_cols:
 # --- Feature engineering ---
 
 for df in [train, test]:
-    df["TotalSF"]      = df["TotalBsmtSF"] + df["1stFlrSF"] + df["2ndFlrSF"]
-    df["HouseAge"]     = df["YrSold"].astype(int) - df["YearBuilt"]
+    df["TotalSF"]      = df["TotalBsmtSF"] + df["1stFlrSF"] + df["2ndFlrSF"]   # toplam alan
+    df["HouseAge"]     = df["YrSold"].astype(int) - df["YearBuilt"]            # ev yaşı (YrSold str→int)
     df["RemodAge"]     = df["YrSold"].astype(int) - df["YearRemodAdd"]
-    df["TotalBath"]    = (df["FullBath"] + 0.5 * df["HalfBath"]
+    df["TotalBath"]    = (df["FullBath"] + 0.5 * df["HalfBath"]                # toplam banyo
                           + df["BsmtFullBath"] + 0.5 * df["BsmtHalfBath"])
     df["TotalPorch"]   = (df["OpenPorchSF"] + df["EnclosedPorch"]
                           + df["3SsnPorch"] + df["ScreenPorch"])
