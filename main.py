@@ -97,6 +97,22 @@ for col in ["MSZoning", "SaleType", "Exterior1st", "Exterior2nd", "KitchenQual"]
 for df in [train, test]:
     df.drop(columns=["Utilities"], inplace=True)
 
+# Genel catch-all: kalan sayısal eksikler → train medyanı, kategorik → train modu
+num_cols = train.select_dtypes(include=[np.number]).columns.drop("SalePrice")
+cat_cols = train.select_dtypes(include=["object"]).columns
+
+for col in num_cols:
+    if train[col].isnull().any() or test[col].isnull().any():
+        med = train[col].median()
+        train[col] = train[col].fillna(med)
+        test[col]  = test[col].fillna(med)
+
+for col in cat_cols:
+    if train[col].isnull().any() or test[col].isnull().any():
+        mode_val = train[col].mode()[0]
+        train[col] = train[col].fillna(mode_val)
+        test[col]  = test[col].fillna(mode_val)
+
 # --- Feature engineering ---
 
 for df in [train, test]:
